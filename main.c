@@ -32,11 +32,13 @@ NRF_TWI_MNGR_DEF(twi_mngr_instance, 5, 0);
 typedef enum {
     OFF,
   DRIVING,
-  TURNING,
   AVOIDING,
   SHUNNING,
   SHUNDRIVE,
   SHORTSHUN,
+  ORIENTING,
+  ADJUST,
+  TURNING,
 } robot_state_t;
 
 
@@ -63,6 +65,8 @@ static void read_tilt (void) {
 	 mt = mpu9250_read_accelerometer();
 	 printf("X: %f Y: %f Z: %f \n", asin(mt.x_axis) * 180/M_PI, asin(mt.y_axis) * 180/M_PI,
 	 	asin(mt.z_axis)*180/M_PI);
+    //TiltD td = { asin(mt.x_axis) * 180/M_PI, asin(mt.y_axis) * 180/M_PI, asin(mt.z_axis) * 180/M_PI };
+    //return td;
 }
 
 
@@ -119,8 +123,11 @@ int main(void) {
   uint16_t rw; bool left; bool right; bool center;
   bool isLeft; bool isRight; bool isCenter;
   isLeft = false; isRight = false; isCenter = false;
+  bool cleft; bool cright; bool ccenter;
+  bool isCliffLeft; bool isCliffRight; int isCliffCenter = 0;
+  isCliffLeft = false; isCliffRight = false;
   float rtnAngle = 0;
-
+  bool turned = false;
   // loop forever, running state machine
   while (1) {
     // read sensors from robot
@@ -134,6 +141,9 @@ int main(void) {
     left = sensors.bumps_wheelDrops.bumpLeft;
     right = sensors.bumps_wheelDrops.bumpRight;
     center = sensors.bumps_wheelDrops.bumpCenter;
+    cleft = sensors.cliffLeft;
+    cright = sensors.cliffRight;
+    ccenter = sensors.cliffCenter;
 
     // handle states
     switch(state) {
@@ -142,8 +152,7 @@ int main(void) {
         // transition logic
         display_write("OFF", DISPLAY_LINE_0);
         if (is_button_pressed(&sensors)) {
-          rw = sensors.rightWheelEncoder;
-          state = DRIVING;
+          state = ORIENTING;
         } else {
           // perform state-specific actions here
 
@@ -156,12 +165,19 @@ int main(void) {
       case DRIVING: {
         // transition logic
         display_write("DRIVING", DISPLAY_LINE_0);
-        uint16_t rw_new = sensors.rightWheelEncoder;
-        float dist = measure_distance(rw_new, rw);
-        if (dist > 1) {
-        	dist = 0;
-        }
-        char buf[16]; snprintf(buf, 16, "%f", dist);
+        //uint16_t rw_new = sensors.rightWheelEncoder;
+        //float dist = measure_distance(rw_new, rw);
+        //if (dist > 1) {
+        	//dist = 0;
+        //}
+       // char buf[16]; snprintf(buf, 16, "%f", dist);
+        //display_write(buf, DISPLAY_LINE_1);
+
+        mpu9250_measurement_t td = mpu9250_read_accelerometer();
+        float x = asin(td.x_axis) * 180/M_PI;
+        float y = asin(td.y_axis) * 180/M_PI;
+        float z = asin(td.z_axis) * 180/M_PI;
+        char buf[16]; snprintf(buf, 16, "%f", x);
         display_write(buf, DISPLAY_LINE_1);
 
         if (is_button_pressed(&sensors)) {
@@ -171,47 +187,54 @@ int main(void) {
         	isLeft = left; isRight = right; isCenter = center;
         	rtnAngle = 0;
         	state = AVOIDING;
-        } else if (sensors.cliffLeft || sensors.cliffCenter || sensors.cliffRight){
-        	state = OFF;
+        } else if (cleft || cright){
+          isCliffLeft = cleft;
+          isCliffRight = cright;
+          rw = sensors.rightWheelEncoder;
+          state = AVOIDING;
+        } else if (turned){
+          display_write("DRIVING", DISPLAY_LINE_0);
+          kobukiDriveDirect(100, 100);
+          state = DRIVING;
         } else {
         	display_write("DRIVING", DISPLAY_LINE_0);
-          kobukiDriveDirect(100, 100);
+          kobukiDriveDirect(140, 140);
           state = DRIVING;
         }
         break; // each case needs to end with break!
       }
 
-      // case TURNING: {
-      // 	display_write("TURNING", DISPLAY_LINE_0);
-      // 	mpu9250_measurement_t angle = mpu9250_read_gyro_integration();
-      // 	float z = abs(angle.z_axis);
-      // 	char buf[16]; snprintf(buf, 16, "%f", z);
-      //   display_write(buf, DISPLAY_LINE_1);
-      // 	if (is_button_pressed(&sensors)) {
-      // 		mpu9250_stop_gyro_integration();
-      //     state = OFF;
-      //   } else if (left || right || center) {
-      //   	mpu9250_stop_gyro_integration();
-      //   	rw = sensors.rightWheelEncoder;
-      //   	isLeft = left; isRight = right; isCenter = center;
-      //   	state = AVOIDING;
-      //   } else if (z>=75.0) {
-      //     rw = sensors.rightWheelEncoder;
-      //  	  state = DRIVING;
-      //  	  mpu9250_stop_gyro_integration();
-      //   } else {
-      //     // perform state-specific actions here
-      //     kobukiDriveDirect(70, -70);
-      //     state = TURNING;
-      //   }
-      //  	break;
-      // }
-      /**
-        off -> button press -> orient
-        orient -> rotate (iteratively) -> drive (150,150)
-        drive -> left/right cliff sensing back up rotate slightly oposite -> adjust
-        adjust -> drive*
-      */
+      case TURNING: {
+      	display_write("TURNING", DISPLAY_LINE_0);
+      	mpu9250_measurement_t angle = mpu9250_read_gyro_integration();
+      	float z = abs(angle.z_axis);
+      	char buf[16]; snprintf(buf, 16, "%f", z);
+        display_write(buf, DISPLAY_LINE_1);
+      	if (is_button_pressed(&sensors)) {
+      		mpu9250_stop_gyro_integration();
+          state = OFF;
+        } /*else if (left || right || center) {
+        	mpu9250_stop_gyro_integration();
+        	rw = sensors.rightWheelEncoder;
+        	isLeft = left; isRight = right; isCenter = center;
+        	state = AVOIDING;
+        }*/ else if (cleft || cright){
+          mpu9250_stop_gyro_integration();
+          isCliffLeft = cleft;
+          isCliffRight = cright;
+          state = TURNING;
+        } else if (z>=170.0) {
+          rw = sensors.rightWheelEncoder;
+          turned = true;
+       	  state = DRIVING;
+       	  mpu9250_stop_gyro_integration();
+        } else {
+          // perform state-specific actions here
+          kobukiDriveDirect(70, -70);
+          state = TURNING;
+        }
+       	break;
+      }
 
       case AVOIDING: {
       	display_write("AVOIDING", DISPLAY_LINE_0);
@@ -225,15 +248,25 @@ int main(void) {
 
         if (is_button_pressed(&sensors)) {
           state = OFF;
-        } else if (dist < 0.1) {
+        } else if (dist < 0.07) {
           kobukiDriveDirect(-100, -100);
           state = AVOIDING;
-        } else if (isLeft || isRight || isCenter){
+        } else if (isLeft || isRight || isCenter && !turned){
           // perform state-specific actions here
-          mpu9250_start_gyro_integration();
+          //mpu9250_start_gyro_integration();
         	dist = 0;
-       	  state = SHUNNING;
+        	mpu9250_start_gyro_integration();
+       	  state = TURNING;
+
+        } else if (isLeft || isRight || isCenter && turned){
+          // perform state-specific actions here
+          //mpu9250_start_gyro_integration();
+        	dist = 0;
+       	  	state = OFF;
+
         } else {
+          mpu9250_start_gyro_integration();
+
           state = ADJUST;
         }
         break;
@@ -296,7 +329,7 @@ int main(void) {
         	rw = sensors.rightWheelEncoder;
         	isLeft = left; isRight = right; isCenter = center;
         	state = AVOIDING;
-        } else if (sensors.cliffLeft || sensors.cliffCenter || sensors.cliffRight){
+        } else if (cleft || sensors.cliffCenter || sensors.cliffRight){
         	state = OFF;
         }else if (dist < 0.1) {
           kobukiDriveDirect(100, 100);
@@ -349,11 +382,59 @@ int main(void) {
        	break;
       }
 
+      case ORIENTING: {
+        mpu9250_measurement_t td = mpu9250_read_accelerometer();
+        float x = asin(td.x_axis) * 180/M_PI;
+        float y = asin(td.y_axis) * 180/M_PI;
+        float z = asin(td.z_axis) * 180/M_PI;
+
+        display_write("ORIENTING", DISPLAY_LINE_0);
+        char buf[16]; snprintf(buf, 16, "%f", y);
+        display_write(buf, DISPLAY_LINE_1);
+        if (is_button_pressed(&sensors)){
+          state = OFF;
+        } else if (x  > -1) {
+          kobukiDriveDirect(-30, 30);
+          state = ORIENTING;
+        } else if (y > 0.07) {
+          kobukiDriveDirect(30, -30);
+          state = ORIENTING;
+        } else if (y < -0.07) {
+          kobukiDriveDirect(-30, 30);
+          state = ORIENTING;
+        } else {
+          rw = sensors.rightWheelEncoder;
+          state = DRIVING;
+        }
+        break;
+      }
+
+      case ADJUST: {
+        display_write("ADJUST", DISPLAY_LINE_0);
+        mpu9250_measurement_t angle = mpu9250_read_gyro_integration();
+      	float z = abs(angle.z_axis);
+      	char buf[16]; snprintf(buf, 16, "%f", z);
+        display_write(buf, DISPLAY_LINE_1);
+
+        if (is_button_pressed(&sensors)) {
+          mpu9250_stop_gyro_integration();
+          state = OFF;
+        } else if (isCliffLeft && z < 20) {
+          kobukiDriveDirect(70, -70);
+          state = ADJUST;
+        } else if (isCliffRight && z < 20) {
+          kobukiDriveDirect(-70, 70);
+          state = ADJUST;
+        } else {
+          rw = sensors.rightWheelEncoder;
+          mpu9250_stop_gyro_integration();
+          state = DRIVING;
+        }
+        break;
+      }
+
       // add other cases here
 
     }
   }
 }
-
-main.c
-Displaying main.c.
